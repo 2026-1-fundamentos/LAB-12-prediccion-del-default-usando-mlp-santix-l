@@ -96,3 +96,48 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+
+import pandas as pd, gzip, pickle, glob, os, json
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.decomposition import PCA
+from sklearn.neural_network import MLPClassifier
+from sklearn.model_selection import GridSearchCV
+from sklearn.compose import ColumnTransformer
+from sklearn.metrics import precision_score, balanced_accuracy_score, recall_score, f1_score, confusion_matrix
+
+def limpiar(df):
+    df = df.rename(columns={'default payment next month': 'default'}).drop('ID', axis=1); df = df.loc[(df["EDUCATION"] != 0) & (df["MARRIAGE"] != 0)].dropna(); df["EDUCATION"] = df["EDUCATION"].apply(lambda x: 4 if x > 4 else x); return df
+
+def guardar(ruta):
+    if os.path.exists(ruta):
+        for f in glob.glob(f"{ruta}/*"): os.remove(f)
+    else: os.makedirs(ruta)
+
+def modelo(x_train, y_train):
+    categoricas = ["SEX", "EDUCATION", "MARRIAGE"]; numericas = [c for c in x_train.columns if c not in categoricas]
+    preprocessor = ColumnTransformer(transformers=[("cat", OneHotEncoder(handle_unknown="ignore"), categoricas), ("scaler", StandardScaler(), numericas)], remainder='passthrough')
+    pipeline = Pipeline(steps=[("preprocessor", preprocessor), ("SelectKBest", SelectKBest(score_func=f_classif)), ("PCA", PCA()), ("CLF", MLPClassifier(max_iter=15000, random_state=21))])
+    parametros = {"PCA__n_components": [None], "SelectKBest__k": [20], "CLF__hidden_layer_sizes": [(50, 30, 40, 60)], "CLF__alpha": [0.26], "CLF__learning_rate_init": [0.001]}
+    model = GridSearchCV(pipeline, parametros, cv=10, scoring="balanced_accuracy", n_jobs=-1, verbose=2); model.fit(x_train, y_train)
+    guardar("files/models")
+    with gzip.open("files/models/model.pkl.gz", "wb") as file: pickle.dump(model, file)
+
+def calc_metricas(y, y_pred, dataset):
+    return {"type": "metrics", "dataset": dataset, "precision": precision_score(y, y_pred), "balanced_accuracy": balanced_accuracy_score(y, y_pred), "recall": recall_score(y, y_pred), "f1_score": f1_score(y, y_pred)}
+
+def calc_cm(y, y_pred, dataset):
+    cm = confusion_matrix(y, y_pred); return {"type": "cm_matrix", "dataset": dataset, "true_0": {"predicted_0": int(cm[0, 0]), "predicted_1": int(cm[0, 1])}, "true_1": {"predicted_0": int(cm[1, 0]), "predicted_1": int(cm[1, 1])}}
+
+def metricas(x_train, x_test, y_train, y_test, model):
+    y_train_pred = model.predict(x_train); y_test_pred = model.predict(x_test)
+    resultados = [calc_metricas(y_train, y_train_pred, "train"), calc_metricas(y_test, y_test_pred, "test"), calc_cm(y_train, y_train_pred, "train"), calc_cm(y_test, y_test_pred, "test")]
+    guardar("files/output")
+    with open("files/output/metrics.json", "w") as file: file.write("\n".join(json.dumps(r) for r in resultados) + "\n")
+
+train = limpiar(pd.read_csv('files/input/train_data.csv.zip', compression='zip', index_col=False)); test = limpiar(pd.read_csv('files/input/test_data.csv.zip', compression='zip', index_col=False))
+x_train, y_train = train.drop(columns=["default"]), train["default"]; x_test, y_test = test.drop(columns=["default"]), test["default"]
+modelo(x_train, y_train)
+with gzip.open("files/models/model.pkl.gz", "rb") as file: model = pickle.load(file)
+metricas(x_train, x_test, y_train, y_test, model)
